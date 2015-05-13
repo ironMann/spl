@@ -27,6 +27,7 @@
 #include <linux/seq_file.h>
 #include <sys/kstat.h>
 #include <sys/vmem.h>
+#include <sys/mutex.h>
 
 #ifndef HAVE_PDE_DATA
 #define PDE_DATA(x) (PDE(x)->data)
@@ -373,7 +374,7 @@ kstat_seq_start(struct seq_file *f, loff_t *pos)
         kstat_t *ksp = (kstat_t *)f->private;
         ASSERT(ksp->ks_magic == KS_MAGIC);
 
-	mutex_enter(ksp->ks_lock);
+	kstat_lock(ksp->ks_lock);
 
         if (ksp->ks_type == KSTAT_TYPE_RAW) {
                 ksp->ks_raw_bufsize = PAGE_SIZE;
@@ -416,7 +417,7 @@ kstat_seq_stop(struct seq_file *f, void *v)
 	if (ksp->ks_type == KSTAT_TYPE_RAW)
 		vmem_free(ksp->ks_raw_buf, ksp->ks_raw_bufsize);
 
-	mutex_exit(ksp->ks_lock);
+	kstat_unlock(ksp->ks_lock);
 }
 
 static struct seq_operations kstat_seq_ops = {
@@ -493,9 +494,9 @@ proc_kstat_write(struct file *filp, const char __user *buf,
 
 	ASSERT(ksp->ks_magic == KS_MAGIC);
 
-	mutex_enter(ksp->ks_lock);
+	kstat_lock(ksp->ks_lock);
 	rc = ksp->ks_update(ksp, KSTAT_WRITE);
-	mutex_exit(ksp->ks_lock);
+	spin_unlock(ksp->ks_lock);
 
 	if (rc)
 		return (-rc);
@@ -549,7 +550,7 @@ __kstat_create(const char *ks_module, int ks_instance, const char *ks_name,
 	mutex_exit(&kstat_module_lock);
 
         ksp->ks_magic = KS_MAGIC;
-	mutex_init(&ksp->ks_private_lock, NULL, MUTEX_DEFAULT, NULL);
+	kstat_lock_init(&ksp->ks_private_lock);
 	ksp->ks_lock = &ksp->ks_private_lock;
 	INIT_LIST_HEAD(&ksp->ks_list);
 
@@ -635,7 +636,7 @@ __kstat_install(kstat_t *ksp)
 
 	list_add_tail(&ksp->ks_list, &module->ksm_kstat_list);
 
-	mutex_enter(ksp->ks_lock);
+	kstat_lock(ksp->ks_lock);
 	ksp->ks_owner = module;
 	ksp->ks_proc = proc_create_data(ksp->ks_name, 0644,
 	    module->ksm_proc, &proc_kstat_operations, (void *)ksp);
@@ -644,7 +645,7 @@ __kstat_install(kstat_t *ksp)
 		if (list_empty(&module->ksm_kstat_list))
 			kstat_delete_module(module);
 	}
-	mutex_exit(ksp->ks_lock);
+	kstat_unlock(ksp->ks_lock);
 out:
 	mutex_exit(&kstat_module_lock);
 }
@@ -671,7 +672,7 @@ __kstat_delete(kstat_t *ksp)
 		kmem_free(ksp->ks_data, ksp->ks_data_size);
 
 	ksp->ks_lock = NULL;
-	mutex_destroy(&ksp->ks_private_lock);
+	kstat_lock(&ksp->ks_private_lock);
 	kmem_free(ksp, sizeof(*ksp));
 
 	return;
@@ -691,6 +692,5 @@ void
 spl_kstat_fini(void)
 {
 	ASSERT(list_empty(&kstat_module_list));
-	mutex_destroy(&kstat_module_lock);
+	kstat_lock_destroy(&kstat_module_lock);
 }
-
